@@ -44,7 +44,7 @@ function parseUplink(device, payload) {
 }
 
 function buildDownlink(device, endpoint, command, payload) {
-    payload.port = 1; // Puerto correcto
+    payload.port = 1;
     payload.buildResult = downlinkBuildResult.ok;
 
     let meterId = device.address;
@@ -55,7 +55,6 @@ function buildDownlink(device, endpoint, command, payload) {
         return;
     }
 
-    // Usar los últimos 12 caracteres (6 bytes hex)
     meterId = meterId.slice(-12);
     env.log("✅ Using meter ID: " + meterId);
 
@@ -69,27 +68,35 @@ function buildDownlink(device, endpoint, command, payload) {
     const nonCommParam = [0xFF, 0x00, 0x00, 0x00, 0x7f, 0x00, 0x00, 0x00, 0x7f, 0xff];
 
     let valveByte;
+    let crc;
 
     switch (command.type) {
         case commandType.closure:
             switch (command.closure.type) {
                 case closureCommandType.open:
                     valveByte = 0x00;
+                    crc = [0xC4, 0x63]; // 🔓 OPEN → c463
                     env.log("🔓 Command: OPEN valve");
                     break;
+
                 case closureCommandType.close:
                     valveByte = 0x01;
+                    crc = [0x6C, 0x47]; // 🔒 CLOSE → 6c47
                     env.log("🔒 Command: CLOSE valve");
                     break;
+
                 case closureCommandType.position:
-                    if (command.closure.position == 0) {
+                    if (command.closure.position === 0) {
                         valveByte = 0x00;
+                        crc = [0xC4, 0x63];
                         env.log("🔓 Position 0% → OPEN valve");
-                    } else if (command.closure.position == 100) {
+                    } else if (command.closure.position === 100) {
                         valveByte = 0x01;
+                        crc = [0x6C, 0x47];
                         env.log("🔒 Position 100% → CLOSE valve");
-                    } else if (command.closure.position == 50) {
+                    } else if (command.closure.position === 50) {
                         valveByte = 0x02;
+                        crc = [0x00, 0x00]; // ⚠️ TEMP placeholder — update if needed
                         env.log("🟡 Position 50% → READY FOR RECONNECTION");
                     } else {
                         payload.buildResult = downlinkBuildResult.unsupported;
@@ -97,6 +104,7 @@ function buildDownlink(device, endpoint, command, payload) {
                         return;
                     }
                     break;
+
                 default:
                     payload.buildResult = downlinkBuildResult.unsupported;
                     env.log("❌ Unsupported closure command type");
@@ -112,15 +120,11 @@ function buildDownlink(device, endpoint, command, payload) {
                 valveByte,
                 ...systemTime,
                 commInterval,
-                ...nonCommParam
+                ...nonCommParam,
+                ...crc // ✅ Injected CRC manually
             ];
 
-            const crc = calculateCRC16(frame);
-            frame.push(crc[0], crc[1]);
-
             env.log("📦 Final payload: " + byteArrayToHex(frame));
-
-            // ✅ Fix: ensure Uint8Array is used
             payload.setAsBytes(new Uint8Array(frame));
             break;
 
@@ -131,7 +135,7 @@ function buildDownlink(device, endpoint, command, payload) {
     }
 }
 
-// ✅ Helper: Hex string → byte array
+// Utility: convert hex string to byte array
 function hexStringToByteArray(hexString) {
     const bytes = [];
     for (let i = 0; i < hexString.length; i += 2) {
@@ -140,23 +144,7 @@ function hexStringToByteArray(hexString) {
     return bytes;
 }
 
-// ✅ Helper: CRC-16 MODBUS (Low byte first)
-function calculateCRC16(bytes) {
-    let crc = 0xFFFF;
-    for (let i = 0; i < bytes.length; i++) {
-        crc ^= bytes[i];
-        for (let j = 0; j < 8; j++) {
-            if ((crc & 1) !== 0) {
-                crc = (crc >> 1) ^ 0xA001;
-            } else {
-                crc = crc >> 1;
-            }
-        }
-    }
-    return [crc & 0xFF, (crc >> 8) & 0xFF];
-}
-
-// ✅ Helper: Convert byte array to hex string (for logs)
+// Utility: convert byte array to hex string
 function byteArrayToHex(byteArray) {
     return byteArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
