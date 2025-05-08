@@ -144,26 +144,21 @@ function hexStringToByteArray(hexString) {
     return bytes;
 }
 
-// Utility: convert byte array to hex string
+// Utility: convert byte array to hex string (for logging)
 function byteArrayToHex(byteArray) {
-    return byteArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  return byteArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 function Decoder(bytes) {
-  const bytesU8 = new Uint8Array(bytes); // Ensure compatibility with DataView
-  const view = new DataView(bytesU8.buffer);
+  const bytesU8 = new Uint8Array(bytes);
 
   function bcdToNumber(bcd) {
     return ((bcd >> 4) * 10) + (bcd & 0x0F);
   }
 
   function decodeBCD4(b) {
-    return parseFloat((
-      bcdToNumber(b[0]) * 10000 +
-      bcdToNumber(b[1]) * 100 +
-      bcdToNumber(b[2]) +
-      bcdToNumber(b[3]) / 100
-    ).toFixed(2));
+    return parseFloat((bcdToNumber(b[0]) * 10000 + bcdToNumber(b[1]) * 100 +
+      bcdToNumber(b[2]) + bcdToNumber(b[3]) / 100).toFixed(2));
   }
 
   function decodeBCD2(b1, b2) {
@@ -174,59 +169,52 @@ function Decoder(bytes) {
     return (b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3];
   }
 
-  function decodeStatus(status) {
-    const valveBits = (status >> 12) & 0b11;
+    function decodeStatus(statusLE) {
+    const valveBits = statusLE & 0b11;  // bits 0 and 1
 
-    const valve_status = valveBits === 0b01
-      ? 'CLOSE'
-      : valveBits === 0b10
-      ? 'Ready for reconnection'
-      : 'OPEN';
+    const valve_status = valveBits === 0b01 || valveBits === 0b10
+    ? 'CLOSE'
+    : 'OPEN';
 
-    const open_valve_disabled = ((status >> 12) & 0b01) === 1; // bit 12 only
-    const tamper_status = ((status >> 9) & 0b1) === 1;
-    const battery_cover_alarm = ((status >> 8) & 0b1) === 1;
+    const open_valve_disabled = ((statusLE >> 2) & 0b1) === 0;  // bit 2
+    const tamper_status = ((statusLE >> 3) & 0b1) === 1;        // bit 3
+    const battery_cover_alarm = ((statusLE >> 4) & 0b1) === 1;  // bit 4
 
     const alarm_code = [];
-    if (valve_status === 'CLOSE') alarm_code.push('ValveAbnormal');
+    if (valve_status !== 'OPEN') alarm_code.push('ValveAbnormal');
     if (tamper_status || battery_cover_alarm) alarm_code.push('BatteryCoverOpen');
 
     return {
-      valve_status,
-      open_valve_disabled,
-      tamper_status,
-      alarm_code: alarm_code.join(',')
+        valve_status,
+        open_valve_disabled,
+        tamper_status,
+        alarm_code: alarm_code.join(',')
     };
-  }
-
-  // === PARSE FIELDS ===
+    }
 
   const msn = bytesU8.slice(2, 8).map(b => b.toString(16).padStart(2, '0')).join('');
   const frame_count = bytesU8[1];
 
   const timestamp = readUInt32BE(bytesU8, 12);
-  const timeObj = new Date(timestamp * 1000);
-  const time = timeObj.toISOString().replace('.000Z', 'Z');
+  const time = new Date(timestamp * 1000).toISOString().replace('.000Z', 'Z');
 
   const reading = decodeBCD4(bytesU8.slice(16, 20));
 
-  // 12 historical profiles
   const profiles = [];
   let volume = reading;
-  for (let i = 0; i < 12; i++) {
+  for (let i = 11; i >= 0; i--) {
     const offset = 20 + i * 2;
     const delta = decodeBCD2(bytesU8[offset], bytesU8[offset + 1]);
     volume = parseFloat((volume - delta).toFixed(2));
 
     const profileTime = new Date(timestamp * 1000);
-    profileTime.setUTCHours(profileTime.getUTCHours() - (12 - i));
+    profileTime.setUTCHours(profileTime.getUTCHours() - (11 - i));
     const timeStr = profileTime.toISOString().slice(0, 13) + ':00:00Z';
 
     profiles.push([timeStr, volume.toFixed(2)]);
   }
 
-  // Meter status and battery
-  const status = (bytesU8[46] << 8) | bytesU8[47];
+  const status = (bytesU8[47] << 8) | bytesU8[46];
   const {
     valve_status,
     open_valve_disabled,
@@ -235,6 +223,16 @@ function Decoder(bytes) {
   } = decodeStatus(status);
 
   const battery_voltage = (bytesU8[48] * 2) / 100;
+
+  const temperatures = [];
+  const temp1 = bytesU8[44];
+  const temp2 = bytesU8[45];
+  const baseTime = new Date(timestamp * 1000);
+  const tempTime1 = new Date(baseTime); tempTime1.setUTCHours(baseTime.getUTCHours());
+  const tempTime2 = new Date(baseTime); tempTime2.setUTCHours(baseTime.getUTCHours() - 6);
+
+  temperatures.push([tempTime1.toISOString().slice(0, 13) + ':00:00Z', temp1.toFixed(2)]);
+  temperatures.push([tempTime2.toISOString().slice(0, 13) + ':00:00Z', temp2.toFixed(2)]);
 
   return {
     msn,
@@ -245,6 +243,7 @@ function Decoder(bytes) {
     open_valve_disabled,
     tamper_status,
     alarm_code,
+    temperatures,
     profiles,
     frame_count
   };
